@@ -9,10 +9,13 @@ from diffusers.schedulers import (
 )
 from adapter.attention_processor import RefSAttnProcessor2_0
 
-
+# 입력 이미지 변형에 초점
+# 이미지의 의상이나 스타일을 변형하는데 초점
+# StableDiffusionControlNetInpaintPipeline 상속
 class IMAGDressing_v1(StableDiffusionControlNetInpaintPipeline):
     _optional_components = []
 
+    # 초기 설정
     def __init__(
             self,
             vae,
@@ -60,6 +63,8 @@ class IMAGDressing_v1(StableDiffusionControlNetInpaintPipeline):
             vae_scale_factor=self.vae_scale_factor, do_convert_rgb=True, do_normalize=False
         )
 
+    # 모델의 실행 장치를 자동 결정
+    # 파이프라인이 CPU 또는 GPU 실행
     @property
     def _execution_device(self):
         if self.device != torch.device("meta") or not hasattr(self.unet, "_hf_hook"):
@@ -73,11 +78,13 @@ class IMAGDressing_v1(StableDiffusionControlNetInpaintPipeline):
                 return torch.device(module._hf_hook.execution_device)
         return self.device
     
+    # 모델의 실행 장치를 자동으로 결정
     def set_scale(self, scale):
         for attn_processor in self.unet.attn_processors.values():
             if isinstance(attn_processor, RefSAttnProcessor2_0):
                 attn_processor.scale = scale
 
+    # 입력 이미지를 원하는 키기와 형식으로 전처리 메서드
     def prepare_control_image(
         self,
         image,
@@ -113,6 +120,8 @@ class IMAGDressing_v1(StableDiffusionControlNetInpaintPipeline):
         return image
 
 
+    # 실제로 모델 호출하는 메서드
+    # 다양한 이미지 생성 및 변형 작업 처리
     @torch.no_grad()
     def __call__(
             self,

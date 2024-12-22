@@ -17,6 +17,7 @@ from adapter.attention_processor import CacheAttnProcessor2_0, RefSAttnProcessor
 import argparse
 from adapter.resampler import Resampler
 
+# 전체 흐름 : 의류 이미지와 포즈 이미지를 입력으로 받아 의상을 입힌 새로운 이미지 생성 후 저장
 
 def image_grid(imgs, rows, cols):
     assert len(imgs) == rows * cols
@@ -28,7 +29,7 @@ def image_grid(imgs, rows, cols):
         grid.paste(img, box=(i % cols * w, i // cols * h))
     return grid
 
-
+# 입력 이미지를 SD 모델 호환 크기로 리사이징징
 def resize_img(input_image, max_side=640, min_side=512, size=None,
                pad_to_max_side=False, mode=Image.BILINEAR, base_pixel_number=64):
     w, h = input_image.size
@@ -42,7 +43,7 @@ def resize_img(input_image, max_side=640, min_side=512, size=None,
 
     return input_image
 
-
+# 모델 초기화 및 세팅 함수수
 def prepare(args):
     generator = torch.Generator(device=args.device).manual_seed(42)
     vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-mse").to(dtype=torch.float16, device=args.device)
@@ -145,7 +146,7 @@ def prepare(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='IMAGDressing_v1')
-
+    # 파라미터 설정정
     parser.add_argument('--model_ckpt',
                         default="ckpt/IMAGDressing-v1_512.pt",
                         type=str)
@@ -153,7 +154,7 @@ if __name__ == "__main__":
     parser.add_argument('--pose_path', type=str, required=True)
     parser.add_argument('--output_path', type=str, default="./output_sd_control")
     parser.add_argument('--device', type=str, default="cuda:0")
-    args = parser.parse_args()
+    args = parser.parse_args() 
 
     # svae path
     output_path = args.output_path
@@ -161,9 +162,10 @@ if __name__ == "__main__":
     if not os.path.exists(output_path):
         os.makedirs(output_path)
 
+    # 파이프 라인 준비
     pipe, generator = prepare(args)
     print('====================== pipe load finish ===================')
-
+    
     num_samples = 1
     clip_image_processor = CLIPImageProcessor()
 
@@ -178,13 +180,16 @@ if __name__ == "__main__":
     null_prompt = ''
     negative_prompt = 'bare, naked, nude, undressed, monochrome, lowres, bad anatomy, worst quality, low quality'
 
+    # 이미지 전처리리
     clothes_img = Image.open(args.cloth_path).convert("RGB")
     clothes_img = resize_img(clothes_img)
     vae_clothes = img_transform(clothes_img).unsqueeze(0)
     ref_clip_image = clip_image_processor(images=clothes_img, return_tensors="pt").pixel_values
-
+    
+    # 프롬프트 설정정
     pose_image = diffusers.utils.load_image(args.pose_path)
 
+    # 이미지 생성
     output = pipe(
         ref_image=vae_clothes,
         prompt=prompt,

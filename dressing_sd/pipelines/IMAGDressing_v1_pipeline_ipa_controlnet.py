@@ -76,6 +76,7 @@ class IMAGDressing_v1(StableDiffusionControlNetPipeline):
         self.image_proj_model = self.init_proj()
         self.load_ip_adapter()
 
+    # 프로젝션 모델 초기화, 디바이스(하드웨어)에 맞게 준비
     def init_proj(self):
         image_proj_model = ProjPlusModel(
             cross_attention_dim=self.unet.config.cross_attention_dim,
@@ -84,7 +85,7 @@ class IMAGDressing_v1(StableDiffusionControlNetPipeline):
             num_tokens=self.num_tokens,
         ).to(self.unet.device, dtype=torch.float16)
         return image_proj_model
-
+    # 주어진 체크포인트 파일에서 이미지, ip 상태 로드한 후, 하드웨어에 적용
     def load_ip_adapter(self):
         if os.path.splitext(self.ip_ckpt)[-1] == ".safetensors":
             state_dict = {"image_proj": {}, "ip_adapter": {}}
@@ -104,12 +105,14 @@ class IMAGDressing_v1(StableDiffusionControlNetPipeline):
     def cross_attention_kwargs(self):
         return self._cross_attention_kwargs
 
+    # 메모리 사용 최적화
     def enable_vae_slicing(self):
         self.vae.enable_slicing()
 
     def disable_vae_slicing(self):
         self.vae.disable_slicing()
 
+    # GPU -> CPU 오프로드
     def enable_sequential_cpu_offload(self, gpu_id=0):
         if is_accelerate_available():
             from accelerate import cpu_offload
@@ -122,6 +125,7 @@ class IMAGDressing_v1(StableDiffusionControlNetPipeline):
             if cpu_offloaded_model is not None:
                 cpu_offload(cpu_offloaded_model, device)
 
+    # 실행될 디바이스 반환, UNet 설정된 특수한 실행 장치 체크
     @property
     def _execution_device(self):
         if self.device != torch.device("meta") or not hasattr(self.unet, "_hf_hook"):
@@ -158,6 +162,7 @@ class IMAGDressing_v1(StableDiffusionControlNetPipeline):
 
         # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.encode_prompt
 
+    # 입력된 텍스트 토큰화, 조건 없는 임베딩을 통해 자유로운 이미지 생성 유도
     def encode_prompt(
             self,
             prompt,
@@ -309,6 +314,7 @@ class IMAGDressing_v1(StableDiffusionControlNetPipeline):
 
         return prompt_embeds, negative_prompt_embeds
 
+    # 주어진 크기, 차원에 맞춰 랜덤 노이즈 생성, 초기 노이즈-> 표준 편차로 조정
     def prepare_latents(
             self,
             batch_size,
@@ -343,6 +349,8 @@ class IMAGDressing_v1(StableDiffusionControlNetPipeline):
         latents = latents * self.scheduler.init_noise_sigma
         return latents
 
+    # 조건 이미지 전처리, 크기와 데이터 유형 변화
+    # 자유로운 가이드 사용 -> 이미지 두 번 복제, 반환
     def prepare_condition(
             self,
             cond_image,
@@ -363,6 +371,7 @@ class IMAGDressing_v1(StableDiffusionControlNetPipeline):
 
         return image
 
+    # 주어진 이미지를 벡터로 변환, 특정 조건 없이 임베딩 생성
     def get_image_embeds(self, clip_image=None, faceid_embeds=None):
         with torch.no_grad():
             clip_image_embeds = self.image_encoder(clip_image.to(self.device, dtype=torch.float16),
@@ -392,17 +401,19 @@ class IMAGDressing_v1(StableDiffusionControlNetPipeline):
                 attn_processor.scale = ipa_scale
                 attn_processor.lora_scale = lora_scale
 
+
+    # 다양한 종류의 입력(텍스트, 이미지, 스타일)과 조건 조합해 스타일 생성
     @torch.no_grad()
     def __call__(
             self,
-            prompt,
+            prompt, # 주제
             null_prompt,
-            negative_prompt,
-            ref_image,
+            negative_prompt, # 제외하고 싶은 요소
+            ref_image, # 참조 이미지
             width,
             height,
-            num_inference_steps,
-            guidance_scale,
+            num_inference_steps, # 이미지 생성 과정 추론 단계 수
+            guidance_scale, # 텍스트 프롬프트와 이미지 간의 일치 가중치
             pose_image=None,
             ref_clip_image=None,
             face_clip_image=None,

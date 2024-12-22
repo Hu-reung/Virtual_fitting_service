@@ -13,7 +13,11 @@ from adapter.attention_processor import CacheAttnProcessor2_0, RefSAttnProcessor
 import argparse
 from adapter.resampler import Resampler
 
+# 전체 흐름 : 의상 이미지 입력 받은 후 "A beautiful woman" 텍스트 프롬프트에 따라
+# 새로운 이미지를 생성하는 가상 의상 입히기 파이프라인 실행행
+
 # transforms.RandomCrop([1024, 768]),
+# 입력 이미지를 지정된 최소/최대 크기와 base pixel size에 맞게 리사이즈
 def resize_img(input_image, max_side=640, min_side=512, size=None,
                pad_to_max_side=False, mode=Image.BILINEAR, base_pixel_number=64):
     w, h = input_image.size
@@ -27,7 +31,7 @@ def resize_img(input_image, max_side=640, min_side=512, size=None,
 
     return input_image
 
-
+# 여러 이미지를 그리드 형태로 병합해 1장의 이미지
 def image_grid(imgs, rows, cols):
     assert len(imgs) == rows * cols
     w, h = imgs[0].size
@@ -38,7 +42,7 @@ def image_grid(imgs, rows, cols):
         grid.paste(img, box=(i % cols * w, i // cols * h))
     return grid
 
-
+# 전체 파이프라인 객체와 random seed generator 초기화화
 def prepare(args):
     generator = torch.Generator(device=args.device).manual_seed(42)
     vae = AutoencoderKL.from_pretrained("stablediffusionapi/counterfeit-v30").to(dtype=torch.float16, device=args.device)
@@ -127,6 +131,7 @@ def prepare(args):
         steps_offset=1,
     )
 
+    # 가상 피팅을 수행하는 Diffusion 기반 이미지 생성
     pipe = IMAGDressing_v1(unet=unet, reference_unet=ref_unet, vae=vae, tokenizer=tokenizer,
                            text_encoder=text_encoder, image_encoder=image_encoder,
                            ImgProj=image_proj,
@@ -135,6 +140,8 @@ def prepare(args):
                            feature_extractor=CLIPImageProcessor)
     return pipe, generator
 
+# 모델 체크포인트, 입력 의상 이미지 경로등, 출력 디렉토리 생성, 파이프라인(여러 모델과 전처리/후처리 과정을 하나로 묶음) 및 generator 초기화
+# 텍스트 프롬프트 구성, 입력 의상 이미지 로드 및 전처리, 파이프라인 실행, 결과 이미지와 입력 이미지 나란히 병합해 저장
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='IMAGDressing_v1')

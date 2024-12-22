@@ -20,6 +20,7 @@ from preprocess.openpose.run_openpose import OpenPose
 from preprocess.utils_mask import get_mask_location
 import cv2 as cv
 
+# 전체 흐름 : 사람 이미지와 옷 이미지를 입력 받아 사람이 옷을 입은 듯한 이미지 합성 후 저장
 
 def image_grid(imgs, rows, cols):
     assert len(imgs) == rows * cols
@@ -31,6 +32,7 @@ def image_grid(imgs, rows, cols):
         grid.paste(img, box=(i % cols * w, i // cols * h))
     return grid
 
+#입력 이미지를 모델 입력 사이즈에 맞게 리사이징 후 패딩을 넣는 함수수
 def resize_img(input_image, max_side=640, min_side=512, size=None,
                pad_to_max_side=False, mode=Image.BILINEAR, base_pixel_number=64):
     w, h = input_image.size
@@ -44,7 +46,7 @@ def resize_img(input_image, max_side=640, min_side=512, size=None,
 
     return input_image
 
-
+# 마스크된 이미지(의상 입힐 영역)을 생성성
 def make_inpaint_condition(image, image_mask):
     image = np.array(image.convert("RGB")).astype(np.float32) / 255.0
 
@@ -58,7 +60,7 @@ def make_inpaint_condition(image, image_mask):
     image = torch.from_numpy(image)
     return image
 
-
+# 모델들을 초기화 후 불러온다.
 def prepare(args):
     generator = torch.Generator(device=args.device).manual_seed(42)
     vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-mse").to(dtype=torch.float16, device=args.device)
@@ -157,7 +159,7 @@ def prepare(args):
                            feature_extractor=CLIPImageProcessor)
     return pipe, generator
 
-
+# 입력 경로 파싱 -> 모델 준비 -> 입력 이미지 순회 -> 각 조합에 대해 수행행
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='IMAGDressing_v1')
 

@@ -9,7 +9,7 @@ from einops import rearrange
 from einops.layers.torch import Rearrange
 
 
-# FFN
+# FFN 입력층, 숨겨진 층으로 두 개의 레이어 표현현
 def FeedForward(dim, mult=4):
     inner_dim = int(dim * mult)
     return nn.Sequential(
@@ -18,8 +18,8 @@ def FeedForward(dim, mult=4):
         nn.GELU(),
         nn.Linear(inner_dim, dim, bias=False),
     )
-
-
+# 다차원 배열의 형태를 변경, 데이터 정보는 변경 X, 구조만 변경
+#  ex_1차원->2차원
 def reshape_tensor(x, heads):
     bs, length, width = x.shape
     # (bs, length, width) --> (bs, length, n_heads, dim_per_head)
@@ -30,7 +30,7 @@ def reshape_tensor(x, heads):
     x = x.reshape(bs, heads, length, -1)
     return x
 
-
+#안정적인 softmax 연산을 위해 sqrt 두번으로 스케일 조정 (안정정화 코드)
 class PerceiverAttention(nn.Module):
     def __init__(self, *, dim, dim_head=64, heads=8):
         super().__init__()
@@ -77,7 +77,7 @@ class PerceiverAttention(nn.Module):
 
         return self.to_out(out)
 
-
+#입력을 일정 개수로 latent vector(핵심적인 특징)로 요약하는 구조
 class PerceiverResampler(nn.Module):
     def __init__(
             self,
@@ -124,7 +124,7 @@ class PerceiverResampler(nn.Module):
         latents = self.proj_out(latents)
         return self.norm_out(latents)
 
-
+#얼굴 임베딩 등 특정 task용으로 설계
 class FacePerceiverResampler(nn.Module):
     def __init__(
             self,
@@ -166,7 +166,7 @@ class FacePerceiverResampler(nn.Module):
         latents = self.proj_out(latents)
         return self.norm_out(latents)
 
-
+#많은 입력들을 요약해 요약된 벡터로 압축하는 모듈
 class Resampler(nn.Module):
     def __init__(
         self,
@@ -235,7 +235,7 @@ class Resampler(nn.Module):
         latents = self.proj_out(latents)
         return self.norm_out(latents)
 
-
+# 특정 값을 무시하거나 제외하고 계산 (평균균)
 def masked_mean(t, *, dim, mask=None):
     if mask is None:
         return t.mean(dim=dim)
@@ -246,7 +246,7 @@ def masked_mean(t, *, dim, mask=None):
 
     return masked_t.sum(dim=dim) / denom.clamp(min=1e-5)
 
-
+#입력된 latent vector(특징)을 더 정제하고, 추상적인 표현으로 바꿔주는 것것
 class ProjPlusModel(torch.nn.Module):
     def __init__(self, cross_attention_dim=768, id_embeddings_dim=512, clip_embeddings_dim=1280, num_tokens=4):
         super().__init__()

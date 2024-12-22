@@ -14,7 +14,7 @@ from adapter.attention_processor import RefSAttnProcessor2_0
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
-
+# 옷 입히기, 참고 이미지, 조건 이미지 등을 포함해 커스터마이즈된 기능 제공
 class IMAGDressing_v1(StableDiffusionPipeline):
     _optional_components = []
 
@@ -68,12 +68,14 @@ class IMAGDressing_v1(StableDiffusionPipeline):
     def cross_attention_kwargs(self):
         return self._cross_attention_kwargs
 
+    # 메모리 효율적 사용하기 위해 slicing 키고 끔끔
     def enable_vae_slicing(self):
         self.vae.enable_slicing()
 
     def disable_vae_slicing(self):
         self.vae.disable_slicing()
 
+    # GPU 메모리 절약을 위해 모듈을 순차적으로 CPU로 옮김김
     def enable_sequential_cpu_offload(self, gpu_id=0):
         if is_accelerate_available():
             from accelerate import cpu_offload
@@ -87,6 +89,7 @@ class IMAGDressing_v1(StableDiffusionPipeline):
                 cpu_offload(cpu_offloaded_model, device)
 
     @property
+    # 모델이 실제로 실행될 디바이스를 리턴하는 프로퍼티
     def _execution_device(self):
         if self.device != torch.device("meta") or not hasattr(self.unet, "_hf_hook"):
             return self.device
@@ -99,6 +102,7 @@ class IMAGDressing_v1(StableDiffusionPipeline):
                 return torch.device(module._hf_hook.execution_device)
         return self.device
 
+    # 추가 인자가 필요한 경우 인자를 구성해 반환
     def prepare_extra_step_kwargs(self, generator, eta):
         # prepare extra kwargs for the scheduler step, since not all schedulers have the same signature
         # eta (η) is only used with the DDIMScheduler, it will be ignored for other schedulers.
@@ -122,6 +126,7 @@ class IMAGDressing_v1(StableDiffusionPipeline):
 
         # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.encode_prompt
 
+    # 텍스트 입력을 텍스트 임베딩으로 인코딩딩
     def encode_prompt(
             self,
             prompt,
@@ -273,6 +278,7 @@ class IMAGDressing_v1(StableDiffusionPipeline):
 
         return prompt_embeds, negative_prompt_embeds
 
+    # 랜덤 노이즈 텐서 초기화, 정규화된 LATENT SPACE로 리턴턴
     def prepare_latents(
             self,
             batch_size,
@@ -307,6 +313,7 @@ class IMAGDressing_v1(StableDiffusionPipeline):
         latents = latents * self.scheduler.init_noise_sigma
         return latents
 
+    # 조건 이미지 전처리 필요한 경우 2배 복사 -> classifier-free guidance에 사용 구성
     def prepare_condition(
             self,
             cond_image,
@@ -327,6 +334,7 @@ class IMAGDressing_v1(StableDiffusionPipeline):
 
         return image
 
+    # CLIP 기반 이미지 인코더를 통해 이미지 임베딩 생성
     def get_image_embeds(self, clip_image=None):
         with torch.no_grad():
             # clip_image_embeds = self.image_encoder(clip_image.to(self.device, dtype=torch.float16)).image_embeds
@@ -404,6 +412,7 @@ class IMAGDressing_v1(StableDiffusionPipeline):
             clip_skip=self.clip_skip,
         )
 
+        # 참조 이미지로부터 임베딩 생성성
         if ref_clip_image is not None:
             with torch.no_grad():
                 image_embeds = self.image_encoder(ref_clip_image.to(device, dtype=prompt_embeds.dtype),
@@ -428,6 +437,7 @@ class IMAGDressing_v1(StableDiffusionPipeline):
 
         # For classifier free guidance, we need to do two forward passes.
         # to avoid doing two forward passes
+        # Guidance 준비
         if do_classifier_free_guidance:
             if ref_clip_image is not None:
                 null_prompt_embeds = torch.cat([cloth_null_embeds, cloth_proj_embed])
@@ -437,6 +447,7 @@ class IMAGDressing_v1(StableDiffusionPipeline):
             negative_prompt_embeds = negative_prompt_embeds
 
         num_channels_latents = self.unet.config.in_channels
+        # 랜덤한 초기 latent 벡터 생성성
         latents = self.prepare_latents(
             batch_size * num_images_per_prompt,
             num_channels_latents,
@@ -448,9 +459,11 @@ class IMAGDressing_v1(StableDiffusionPipeline):
         )
 
         # Prepare extra step kwargs.
+        # 추가 파라미터 준비비
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
         # Prepare ref image latents
+        # 참조 이미지 인코딩딩
         ref_image_tensor = ref_image.to(
             dtype=self.vae.dtype, device=self.vae.device
         )
@@ -459,9 +472,12 @@ class IMAGDressing_v1(StableDiffusionPipeline):
 
         # denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
+
+        # 디노이징 루프 시작 (반복으로 latents를 점차 이미지로 디노이징징)
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 # 1. Forward reference image
+                # 참조 이미지 기반 self-attention 히든 상태들을 캐시로 저장장
                 if i == 0:
                     _ = self.reference_unet(
                         ref_image_latents.repeat(
@@ -496,6 +512,7 @@ class IMAGDressing_v1(StableDiffusionPipeline):
                         guidance_scale_tensor, embedding_dim=self.unet.config.time_cond_proj_dim
                     ).to(device=device, dtype=latents.dtype)
 
+                # UNet 예측 수행행
                 noise_pred = self.unet(
                     latent_model_input[0].unsqueeze(0),
                     t,
@@ -536,11 +553,13 @@ class IMAGDressing_v1(StableDiffusionPipeline):
                         (i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0
                 ):
                     progress_bar.update()
+                    # 콜백 호출 및 진행바 업데이트트
                     if callback is not None and i % callback_steps == 0:
                         step_idx = i // getattr(self.scheduler, "order", 1)
                         callback(step_idx, t, latents)
 
         # Post-processing
+        # 후처리 : VAE 디코딩 + 정규화
         image = self.vae.decode(latents / self.vae.config.scaling_factor, return_dict=False, generator=generator)[0]
         do_denormalize = [True] * image.shape[0]
         image = self.image_processor.postprocess(image, output_type=output_type, do_denormalize=do_denormalize)

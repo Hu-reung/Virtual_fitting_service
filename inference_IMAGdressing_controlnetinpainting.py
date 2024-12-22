@@ -20,7 +20,7 @@ from preprocess.openpose.run_openpose import OpenPose
 from preprocess.utils_mask import get_mask_location
 import cv2 as cv
 
-
+# 결과 이미지를 하나로 이어 붙여 보여주는 함수수
 def image_grid(imgs, rows, cols):
     assert len(imgs) == rows * cols
     w, h = imgs[0].size
@@ -31,6 +31,7 @@ def image_grid(imgs, rows, cols):
         grid.paste(img, box=(i % cols * w, i // cols * h))
     return grid
 
+# 입력 이미지를 모델에 맞는 크기로 조정
 def resize_img(input_image, max_side=640, min_side=512, size=None,
                pad_to_max_side=False, mode=Image.BILINEAR, base_pixel_number=64):
     w, h = input_image.size
@@ -44,7 +45,7 @@ def resize_img(input_image, max_side=640, min_side=512, size=None,
 
     return input_image
 
-
+# 마스킹 영역을 -1로 설정한 텐서 생성성
 def make_inpaint_condition(image, image_mask):
     image = np.array(image.convert("RGB")).astype(np.float32) / 255.0
 
@@ -58,7 +59,7 @@ def make_inpaint_condition(image, image_mask):
     image = torch.from_numpy(image)
     return image
 
-
+# 모델 가중치와 구성 요소들을 초기화하여 pipe 객체 생성성
 def prepare(args):
     generator = torch.Generator(device=args.device).manual_seed(42)
     vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-mse").to(dtype=torch.float16, device=args.device)
@@ -171,17 +172,20 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # svae path
+    # 인자 값 처리
     output_path = args.output_path
 
     if not os.path.exists(output_path):
         os.makedirs(output_path)
     # prepare pipline
+    # 파이프라인 및 서브모델 로드드
     pipe, generator = prepare(args)
     # prepare mask model
     parsing_model = Parsing(1)
     openpose_model = OpenPose(1)
     print('====================== pipe load finish ===================')
 
+    # 입력 이미지 처리리
     num_samples = 1
     clip_image_processor = CLIPImageProcessor()
 
@@ -210,6 +214,7 @@ if __name__ == "__main__":
     model_image = model_image.resize((512, 512))
     control_image = make_inpaint_condition(model_image, mask_image)
 
+    # PIPE에 필요한 정보 모두 전달해 결과 이미지 생성
     output = pipe(
         ref_image=vae_clothes,
         prompt=prompt,

@@ -105,6 +105,8 @@ class IMAGDressing_v1(StableDiffusionControlNetPipeline):
                 return torch.device(module._hf_hook.execution_device)
         return self.device
 
+    # 샘플링 추가 인자 설정
+    # ex) 이미지나 텍스트 강도 조정
     def prepare_extra_step_kwargs(self, generator, eta):
         # prepare extra kwargs for the scheduler step, since not all schedulers have the same signature
         # eta (η) is only used with the DDIMScheduler, it will be ignored for other schedulers.
@@ -128,6 +130,8 @@ class IMAGDressing_v1(StableDiffusionControlNetPipeline):
 
         # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.encode_prompt
 
+    # 텍스트 프롬프트나 스타일 설명을 모델이 이해할 수 있게 텍스트 임베딩
+    # ex) 캐주얼한 스타일로 그려줘 -> 숫자로 바꿔 모델에게 전달
     def encode_prompt(
             self,
             prompt,
@@ -279,6 +283,8 @@ class IMAGDressing_v1(StableDiffusionControlNetPipeline):
 
         return prompt_embeds, negative_prompt_embeds
 
+    # 초기 노이즈 준비 
+    # ex) 아무것도 없는 캔버스 위에 랜덤하게 점을 찍는 단계
     def prepare_latents(
             self,
             batch_size,
@@ -313,6 +319,7 @@ class IMAGDressing_v1(StableDiffusionControlNetPipeline):
         latents = latents * self.scheduler.init_noise_sigma
         return latents
 
+    # 모델 입력에 맞게 전처리 역할
     def prepare_condition(
             self,
             cond_image,
@@ -333,6 +340,7 @@ class IMAGDressing_v1(StableDiffusionControlNetPipeline):
 
         return image
 
+    # 참조 이미지 가져와 모델이 이해할 수 있도록 임베딩 변환 진행
     def get_image_embeds(self, clip_image=None, faceid_embeds=None):
         with torch.no_grad():
             # clip_image_embeds = self.image_encoder(clip_image.to(self.device, dtype=torch.float16)).image_embeds
@@ -353,6 +361,7 @@ class IMAGDressing_v1(StableDiffusionControlNetPipeline):
             if isinstance(attn_processor, RefSAttnProcessor2_0):
                 attn_processor.scale = scale
 
+    # __call__ : 함수처럼 호출할 수 있게 해주는 python 특수 메서드
     @torch.no_grad()
     def __call__(
             self,
@@ -426,6 +435,7 @@ class IMAGDressing_v1(StableDiffusionControlNetPipeline):
         if pose_image is not None:
             # Prepare control image
             if isinstance(controlnet, ControlNetModel):
+                # 조건 이미지 처리
                 image = self.prepare_image(
                     image=pose_image,
                     width=width,
@@ -448,6 +458,8 @@ class IMAGDressing_v1(StableDiffusionControlNetPipeline):
         text_encoder_lora_scale = (
             self.cross_attention_kwargs.get("scale", None) if self.cross_attention_kwargs is not None else None
         )
+
+        # 텍스트 프롬프트를 텍스트 임베딩 전화
         prompt_embeds, negative_prompt_embeds = self.encode_prompt(
             prompt,
             device,

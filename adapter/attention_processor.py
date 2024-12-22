@@ -9,7 +9,7 @@ from diffusers.models.lora import LoRALinearLayer
 
 
 
-
+# attention 최적화, 효율적 처리, 캐시 처리로 실행 속도, 성능 개선
 class CacheAttnProcessor2_0:
     r"""
     Processor for implementing scaled dot-product attention (enabled by default if you're using PyTorch 2.0).
@@ -99,7 +99,7 @@ class CacheAttnProcessor2_0:
 
         return hidden_states
 
-
+# attention 메커니즘 확장, 최적화 역할
 class SAttnProcessor2_0(torch.nn.Module):
     r"""
     Processor for implementing scaled dot-product attention (enabled by default if you're using PyTorch 2.0).
@@ -198,7 +198,8 @@ class SAttnProcessor2_0(torch.nn.Module):
 
         return hidden_states
 
-
+# 특정 보델에서 attention 관련 연산 담당, 최적화, 가중치 조정, 결과 보강
+# 주로 입력된 텍스트나 데이터를 처리하는 데 중요한 역할
 class CAttnProcessor2_0(torch.nn.Module):
     r"""
     Processor for implementing scaled dot-product attention (enabled by default if you're using PyTorch 2.0).
@@ -294,7 +295,8 @@ class CAttnProcessor2_0(torch.nn.Module):
 
         return hidden_states
 
-
+# attention 메커니즘(특정 입력 부분에 갖우치를 부여해 중요한 정보에 집중) 
+# 처리 기능 수행, 복잡한 동작 수행 베이스 역할
 class BaseSAttnProcessor2_0(torch.nn.Module):
     r"""
     Processor for implementing scaled dot-product attention (enabled by default if you're using PyTorch 2.0).
@@ -388,6 +390,7 @@ class BaseSAttnProcessor2_0(torch.nn.Module):
 
         return hidden_states
 
+# 기존 attention 매커니즘 보강, LoRA를 통해 모델 가중치를 더 적은 수의 파라미터로 최적화
 class LoraRefSAttnProcessor2_0(torch.nn.Module):
     r"""
     Processor for implementing scaled dot-product attention (enabled by default if you're using PyTorch 2.0).
@@ -510,6 +513,7 @@ class LoraRefSAttnProcessor2_0(torch.nn.Module):
         hidden_states = hidden_states / attn.rescale_output_factor
         return hidden_states
 
+# 기존 attention 결과에 추가 학습 가능성 부여
 class RefSAttnProcessor2_0(torch.nn.Module):
     r"""
     Processor for implementing scaled dot-product attention (enabled by default if you're using PyTorch 2.0).
@@ -626,7 +630,7 @@ class RefSAttnProcessor2_0(torch.nn.Module):
 
         return hidden_states
 
-
+# 사용자의 입력값을 받아 처리
 class RefCAttnProcessor2_0(torch.nn.Module):
     r"""
     Processor for implementing scaled dot-product attention (enabled by default if you're using PyTorch 2.0).
@@ -742,7 +746,7 @@ class RefCAttnProcessor2_0(torch.nn.Module):
 
         return hidden_states
 
-
+# ip 어댑터 사용해 이미지 특징을 통합하는 방식 + LoRA(저차원 행렬 곱을 덧붙여 새로운 정보 학습) 적용
 class LoRAIPAttnProcessor2_0(nn.Module):
     r"""
     Processor for implementing the LoRA attention mechanism.
@@ -870,6 +874,7 @@ class LoRAIPAttnProcessor2_0(nn.Module):
 
         return hidden_states
         
+# 이미지 키/값 벡터 생성 후 가중치 조절해 최종 히든층에 더해짐
 class IPAttnProcessor2_0(torch.nn.Module):
     r"""
     Attention processor for IP-Adapater for PyTorch 2.0.
@@ -1002,7 +1007,7 @@ class IPAttnProcessor2_0(torch.nn.Module):
 
         return hidden_states
 
-
+# 가중치 보완, 기존 attention 결과에 더해, 새로운 시각적 조건 학습 반영
 class RefLoraSAttnProcessor2_0(torch.nn.Module):
     r"""
     Processor for implementing scaled dot-product attention (enabled by default if you're using PyTorch 2.0).
