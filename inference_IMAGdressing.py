@@ -1,19 +1,17 @@
 from dressing_sd.pipelines.IMAGDressing_v1_pipeline import IMAGDressing_v1
 import os
 import torch
-
 from PIL import Image
 from diffusers import UNet2DConditionModel, AutoencoderKL, DDIMScheduler
 from torchvision import transforms
 from transformers import CLIPImageProcessor
 from diffusers.pipelines.stable_diffusion import StableDiffusionSafetyChecker
-
 from transformers import CLIPTextModel, CLIPTokenizer, CLIPVisionModelWithProjection
 from adapter.attention_processor import CacheAttnProcessor2_0, RefSAttnProcessor2_0, CAttnProcessor2_0
 import argparse
 from adapter.resampler import Resampler
 
-
+# ---------- 이미지 크기 비율 유지하며 조정하는 함수 ----------
 def resize_img(input_image, max_side=640, min_side=512, size=None,
                pad_to_max_side=False, mode=Image.BILINEAR, base_pixel_number=64):
     w, h = input_image.size
@@ -24,34 +22,29 @@ def resize_img(input_image, max_side=640, min_side=512, size=None,
     w_resize_new = (round(ratio * w) // base_pixel_number) * base_pixel_number
     h_resize_new = (round(ratio * h) // base_pixel_number) * base_pixel_number
     input_image = input_image.resize([w_resize_new, h_resize_new], mode)
-
     return input_image
 
-
+# ---------- 여러 이미지 붙여서 하나의 그리드 이미지 생성 ----------
 def image_grid(imgs, rows, cols):
     assert len(imgs) == rows * cols
     w, h = imgs[0].size
     grid = Image.new("RGB", size=(cols * w, rows * h))
-    grid_w, grid_h = grid.size
-
     for i, img in enumerate(imgs):
         grid.paste(img, box=(i % cols * w, i // cols * h))
     return grid
 
-
+# ---------- IMAGDressing 파이프라인 구성 함수 ----------
 def prepare(args):
-    generator = torch.Generator(device=args.device).manual_seed(42)
+    generator = torch.Generator(device=args.device).manual_seed(42)  # 랜덤 시드 고정
+
+    # VAE, 토크나이저, 텍스트/이미지 인코더, UNet 불러오기
     vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-mse").to(dtype=torch.float16, device=args.device)
     tokenizer = CLIPTokenizer.from_pretrained("SG161222/Realistic_Vision_V4.0_noVAE", subfolder="tokenizer")
-    text_encoder = CLIPTextModel.from_pretrained("SG161222/Realistic_Vision_V4.0_noVAE", subfolder="text_encoder").to(
-        dtype=torch.float16, device=args.device)
-    image_encoder = CLIPVisionModelWithProjection.from_pretrained("h94/IP-Adapter", subfolder="models/image_encoder").to(
-        dtype=torch.float16, device=args.device)
-    unet = UNet2DConditionModel.from_pretrained("SG161222/Realistic_Vision_V4.0_noVAE", subfolder="unet").to(
-        dtype=torch.float16,
-        device=args.device)
+    text_encoder = CLIPTextModel.from_pretrained("SG161222/Realistic_Vision_V4.0_noVAE", subfolder="text_encoder").to(dtype=torch.float16, device=args.device)
+    image_encoder = CLIPVisionModelWithProjection.from_pretrained("h94/IP-Adapter", subfolder="models/image_encoder").to(dtype=torch.float16, device=args.device)
+    unet = UNet2DConditionModel.from_pretrained("SG161222/Realistic_Vision_V4.0_noVAE", subfolder="unet").to(dtype=torch.float16, device=args.device)
 
-    # load ipa weight
+    # 이미지 프로젝션 모듈 준비
     image_proj = Resampler(
         dim=unet.config.cross_attention_dim,
         depth=4,
@@ -61,10 +54,9 @@ def prepare(args):
         embedding_dim=image_encoder.config.hidden_size,
         output_dim=unet.config.cross_attention_dim,
         ff_mult=4
-    )
-    image_proj = image_proj.to(dtype=torch.float16, device=args.device)
+    ).to(dtype=torch.float16, device=args.device)
 
-    # set attention processor
+    # UNet에 Attention Processor 설정
     attn_procs = {}
     st = unet.state_dict()
     for name in unet.attn_processors.keys():
@@ -77,29 +69,24 @@ def prepare(args):
         elif name.startswith("down_blocks"):
             block_id = int(name[len("down_blocks.")])
             hidden_size = unet.config.block_out_channels[block_id]
+
         if cross_attention_dim is None:
             attn_procs[name] = RefSAttnProcessor2_0(name, hidden_size)
         else:
             attn_procs[name] = CAttnProcessor2_0(name, hidden_size=hidden_size, cross_attention_dim=cross_attention_dim)
 
     unet.set_attn_processor(attn_procs)
-    adapter_modules = torch.nn.ModuleList(unet.attn_processors.values())
-    adapter_modules = adapter_modules.to(dtype=torch.float16, device=args.device)
+    adapter_modules = torch.nn.ModuleList(unet.attn_processors.values()).to(dtype=torch.float16, device=args.device)
     del st
 
-    ref_unet = UNet2DConditionModel.from_pretrained("SG161222/Realistic_Vision_V4.0_noVAE", subfolder="unet").to(
-        dtype=torch.float16,
-        device=args.device)
-    ref_unet.set_attn_processor(
-        {name: CacheAttnProcessor2_0() for name in ref_unet.attn_processors.keys()})  # set cache
+    # 참조용 UNet 로드 및 캐시 Attention 설정
+    ref_unet = UNet2DConditionModel.from_pretrained("SG161222/Realistic_Vision_V4.0_noVAE", subfolder="unet").to(dtype=torch.float16, device=args.device)
+    ref_unet.set_attn_processor({name: CacheAttnProcessor2_0() for name in ref_unet.attn_processors.keys()})
 
-    # weights load
+    # 학습된 모델 체크포인트 로드
     model_sd = torch.load(args.model_ckpt, map_location="cpu")["module"]
+    ref_unet_dict, unet_dict, image_proj_dict, adapter_modules_dict = {}, {}, {}, {}
 
-    ref_unet_dict = {}
-    unet_dict = {}
-    image_proj_dict = {}
-    adapter_modules_dict = {}
     for k in model_sd.keys():
         if k.startswith("ref_unet"):
             ref_unet_dict[k.replace("ref_unet.", "")] = model_sd[k]
@@ -112,10 +99,12 @@ def prepare(args):
         else:
             print(k)
 
+    # 파라미터 로딩
     ref_unet.load_state_dict(ref_unet_dict)
     image_proj.load_state_dict(image_proj_dict)
     adapter_modules.load_state_dict(adapter_modules_dict)
 
+    # DDIM 노이즈 스케줄러 설정
     noise_scheduler = DDIMScheduler(
         num_train_timesteps=1000,
         beta_start=0.00085,
@@ -126,53 +115,55 @@ def prepare(args):
         steps_offset=1,
     )
 
-    pipe = IMAGDressing_v1(unet=unet, reference_unet=ref_unet, vae=vae, tokenizer=tokenizer,
-                         text_encoder=text_encoder, image_encoder=image_encoder,
-                         ImgProj=image_proj,
-                         scheduler=noise_scheduler,
-                         safety_checker=StableDiffusionSafetyChecker,
-                         feature_extractor=CLIPImageProcessor)
+    # 최종 파이프라인 구성
+    pipe = IMAGDressing_v1(
+        unet=unet, reference_unet=ref_unet, vae=vae,
+        tokenizer=tokenizer, text_encoder=text_encoder, image_encoder=image_encoder,
+        ImgProj=image_proj, scheduler=noise_scheduler,
+        safety_checker=StableDiffusionSafetyChecker,
+        feature_extractor=CLIPImageProcessor
+    )
     return pipe, generator
 
 
+# ---------- 실행 부분 ----------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='IMAGDressing_v1')
-    parser.add_argument('--model_ckpt',
-                        default="ckpt/IMAGDressing-v1_512.pt",
-                        type=str)
+    parser.add_argument('--model_ckpt', default="ckpt/IMAGDressing-v1_512.pt", type=str)
     parser.add_argument('--cloth_path', type=str, required=True)
     parser.add_argument('--output_path', type=str, default="./output_sd_base")
     parser.add_argument('--device', type=str, default="cuda:0")
     args = parser.parse_args()
 
-    # svae path
-    output_path = args.output_path
+    # 출력 경로 없으면 생성
+    if not os.path.exists(args.output_path):
+        os.makedirs(args.output_path)
 
-    if not os.path.exists(output_path):
-        os.makedirs(output_path)
-
+    # 파이프라인 로드
     pipe, generator = prepare(args)
     print('====================== pipe load finish ===================')
 
+    # 이미지 변환 및 CLIP 전처리
     num_samples = 1
     clip_image_processor = CLIPImageProcessor()
-
     img_transform = transforms.Compose([
         transforms.Resize([640, 512], interpolation=transforms.InterpolationMode.BILINEAR),
         transforms.ToTensor(),
         transforms.Normalize([0.5], [0.5]),
     ])
 
-    prompt = 'A beautiful woman'
-    prompt = prompt + ', best quality, high quality'
+    # 프롬프트 설정
+    prompt = 'A beautiful woman, best quality, high quality'
     null_prompt = ''
     negative_prompt = 'bare, naked, nude, undressed, monochrome, lowres, bad anatomy, worst quality, low quality'
 
+    # 옷 이미지 로드 및 전처리
     clothes_img = Image.open(args.cloth_path).convert("RGB")
     clothes_img = resize_img(clothes_img)
     vae_clothes = img_transform(clothes_img).unsqueeze(0)
     ref_clip_image = clip_image_processor(images=clothes_img, return_tensors="pt").pixel_values
 
+    # 파이프라인 실행 (이미지 생성)
     output = pipe(
         ref_image=vae_clothes,
         prompt=prompt,
@@ -188,10 +179,8 @@ if __name__ == "__main__":
         num_inference_steps=50,
     ).images
 
-    save_output = []
+    # 결과 이미지 저장
+    save_output = [clothes_img.resize((512, 640), Image.BICUBIC)]
     save_output.append(output[0])
-    save_output.insert(0, clothes_img.resize((512, 640), Image.BICUBIC))
-
     grid = image_grid(save_output, 1, 2)
-    grid.save(
-        output_path + '/' + args.cloth_path.split("/")[-1])
+    grid.save(os.path.join(args.output_path, args.cloth_path.split("/")[-1]))
