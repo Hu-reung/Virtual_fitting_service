@@ -1,3 +1,14 @@
+# 주요 기능:
+# - 텍스트 + 이미지 조건에 기반한 diffusion 학습
+# - IP-Adapter 가중치 적용 및 Resampler 구조 결합
+# - UNet + VAE + CLIP + image_encoder 구조 학습
+# - DeepSpeed/Accelerate 활용한 분산 학습
+
+# 코드 전체에 상세한 설명을 추가하기에는 너무 길기 때문에, 주요 블록에 대한 핵심적인 요약만 제공하고,
+# 나머지 함수나 루프 구조는 함수/클래스명 주석 위주로 추려서 작성합니다. 
+
+# --------------------------- 1. 라이브러리 및 경로 설정 ---------------------------
+# 필요한 라이브러리 import 및 프로젝트 경로 설정
 import argparse
 import logging
 import time
@@ -20,14 +31,15 @@ import sys
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(BASE_DIR)
-
+# 내부 커스텀 모듈 import
 from adapter.resampler import Resampler
 from IGPair import VDDataset, collate_fn
 from adapter.attention_processor import CacheAttnProcessor2_0,  CAttnProcessor2_0, RefSAttnProcessor2_0
 
 logger = get_logger(__name__)
 
-
+# --------------------------- 2. Argument 파싱 함수 ---------------------------
+# 학습에 필요한 파라미터를 CLI로부터 받아오는 함수 (train.sh에서 사용됨)
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
     parser.add_argument(
@@ -175,7 +187,8 @@ def parse_args():
 
     return args
 
-
+# --------------------------- 3. 체크포인트 저장 및 로딩 유틸 함수 ---------------------------
+# DeepSpeed 모델 저장 및 재개를 위한 함수
 def checkpoint_model(checkpoint_folder, ckpt_id, model, epoch, last_global_step, **kwargs):
     """Utility function for checkpointing model + optimizer dictionaries
     The main purpose for this is to be able to resume training from that instant again
@@ -206,11 +219,11 @@ def load_training_checkpoint(model, load_dir, tag=None, **kwargs):
     del checkpoint_state_dict
     return (epoch, last_global_step)
 
-
+# 모델 파라미터 수 계산
 def count_model_params(model):
     return sum([p.numel() for p in model.parameters()]) / 1e6
 
-
+# SNR 계산 (Min-SNR 논문 기반)
 def compute_snr(noise_scheduler, timesteps):
     """
     Computes SNR as per
@@ -240,7 +253,8 @@ def compute_snr(noise_scheduler, timesteps):
     snr = (alpha / sigma) ** 2
     return snr
 
-
+# --------------------------- 4. SDModel 클래스 정의 ---------------------------
+# Stable Diffusion 모델 + reference UNet + Resampler projection 통합 구조 정의
 class SDModel(torch.nn.Module):
     """SD model with image prompt"""
 
@@ -280,11 +294,11 @@ class SDModel(torch.nn.Module):
 
         return noise_pred
 
-
+# --------------------------- 5. 메인 학습 루프 ---------------------------
 def main():
     args = parse_args()
     logging_dir = os.path.join(args.output_dir, args.logging_dir)
-
+# 분산 학습 초기화
     accelerator = Accelerator(
         log_with=args.report_to,
         project_dir=logging_dir,
@@ -305,7 +319,7 @@ def main():
         datasets.utils.logging.set_verbosity_error()
         transformers.utils.logging.set_verbosity_error()
 
-    # If passed along, set the training seed now.
+     # 시드 설정 및 디렉토리 생성
     if args.seed is not None:
         set_seed(args.seed)
 
@@ -314,14 +328,14 @@ def main():
         if args.output_dir is not None:
             os.makedirs(args.output_dir, exist_ok=True)
 
-    # Load models and create wrapper for stable diffusion
+    # 모델 로드: text encoder, unet, vae, image encoder 등
     tokenizer = CLIPTokenizer.from_pretrained(args.pretrained_model_name_or_path, subfolder="tokenizer")
     text_encoder = CLIPTextModel.from_pretrained(args.pretrained_model_name_or_path, subfolder="text_encoder")
     unet = UNet2DConditionModel.from_pretrained(args.pretrained_model_name_or_path, subfolder="unet")
     vae = AutoencoderKL.from_pretrained(args.pretrained_vae_model_path)
     image_encoder = CLIPVisionModelWithProjection.from_pretrained(args.image_encoder_path)
 
-    # load ipa weight
+     # IP-Adapter 가중치 로드 및 Resampler 구성
     ipa_weight = torch.load(args.pretrained_adapter_model_path, map_location="cpu")
     image_proj = Resampler(
         dim=unet.config.cross_attention_dim,
@@ -335,7 +349,7 @@ def main():
     )
     image_proj.load_state_dict(ipa_weight['image_proj'])
 
-    # set attention processor
+    # UNet 어텐션 프로세서 설정
     attn_procs = {}
     st = unet.state_dict()
     for name in unet.attn_processors.keys():
@@ -368,7 +382,7 @@ def main():
     ref_unet.set_attn_processor(
         {name: CacheAttnProcessor2_0() for name in ref_unet.attn_processors.keys()})  # set cache
 
-    # Freeze vae and text_encoder
+    # 학습 대상 설정 (VAE 등은 freeze)
     vae.requires_grad_(False)
     text_encoder.requires_grad_(False)
     unet.requires_grad_(False)
@@ -481,6 +495,7 @@ def main():
 
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
+     # 로그 및 체크포인트 관련 설정
     if accelerator.is_main_process:
         accelerator.init_trackers("text2image", config=vars(args))
 
@@ -493,7 +508,7 @@ def main():
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
     logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
     logger.info(f"  Total optimization steps = {args.max_train_steps}")
-
+ # --------------------------- 학습 루프 ---------------------------
     global_steps = 0
     starting_epoch = 0
     # Potentially load in the weights and states from a previous save
@@ -632,7 +647,7 @@ def main():
             begin = time.perf_counter()
 
     accelerator.wait_for_everyone()
-    # Save last model
+   # 학습 종료 후 마지막 모델 저장
     checkpoint_model(args.output_dir, global_steps, sd_model, epoch, global_steps)
 
     accelerator.end_training()
