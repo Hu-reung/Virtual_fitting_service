@@ -3,6 +3,7 @@ from dressing_sd.pipelines.IMAGDressing_v1_pipeline_ipa_controlnet import IMAGDr
 import os
 import torch
 
+# 다양한 Attention 모듈 불러오기
 from adapter.attention_processor import CacheAttnProcessor2_0, RefSAttnProcessor2_0, CAttnProcessor2_0
 
 from PIL import Image
@@ -11,27 +12,24 @@ from diffusers import ControlNetModel, UNet2DConditionModel, \
 from torchvision import transforms
 from transformers import CLIPImageProcessor
 from diffusers.pipelines.stable_diffusion import StableDiffusionSafetyChecker
-
 from transformers import CLIPTextModel, CLIPTokenizer, CLIPVisionModelWithProjection
-from adapter.attention_processor import RefSAttnProcessor2_0, LoraRefSAttnProcessor2_0,  IPAttnProcessor2_0, LoRAIPAttnProcessor2_0 
+from adapter.attention_processor import RefSAttnProcessor2_0, LoraRefSAttnProcessor2_0, IPAttnProcessor2_0, LoRAIPAttnProcessor2_0 
 import argparse
 from adapter.resampler import Resampler
 from insightface.app import FaceAnalysis
 import cv2
 from insightface.utils import face_align
 
-
+# 여러 이미지를 격자로 붙이는 함수
 def image_grid(imgs, rows, cols):
     assert len(imgs) == rows * cols
     w, h = imgs[0].size
     grid = Image.new("RGB", size=(cols * w, rows * h))
-    grid_w, grid_h = grid.size
-
     for i, img in enumerate(imgs):
         grid.paste(img, box=(i % cols * w, i // cols * h))
     return grid
 
-
+# 이미지 크기를 비율 유지하며 리사이즈하는 함수
 def resize_img(input_image, max_side=640, min_side=512, size=None,
                pad_to_max_side=False, mode=Image.BILINEAR, base_pixel_number=64):
     w, h = input_image.size
@@ -42,23 +40,20 @@ def resize_img(input_image, max_side=640, min_side=512, size=None,
     w_resize_new = (round(ratio * w) // base_pixel_number) * base_pixel_number
     h_resize_new = (round(ratio * h) // base_pixel_number) * base_pixel_number
     input_image = input_image.resize([w_resize_new, h_resize_new], mode)
-
     return input_image
 
-
+# 모델과 파이프라인 구성 함수
 def prepare(args):
     generator = torch.Generator(device=args.device).manual_seed(42)
+
+    # 기본 구성요소 불러오기
     vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-mse").to(dtype=torch.float16, device=args.device)
     tokenizer = CLIPTokenizer.from_pretrained("SG161222/Realistic_Vision_V4.0_noVAE", subfolder="tokenizer")
-    text_encoder = CLIPTextModel.from_pretrained("SG161222/Realistic_Vision_V4.0_noVAE", subfolder="text_encoder").to(
-        dtype=torch.float16, device=args.device)
-    image_encoder = CLIPVisionModelWithProjection.from_pretrained("h94/IP-Adapter", subfolder="models/image_encoder").to(
-        dtype=torch.float16, device=args.device)
-    unet = UNet2DConditionModel.from_pretrained("SG161222/Realistic_Vision_V4.0_noVAE", subfolder="unet").to(
-        dtype=torch.float16,
-        device=args.device)
+    text_encoder = CLIPTextModel.from_pretrained("SG161222/Realistic_Vision_V4.0_noVAE", subfolder="text_encoder").to(dtype=torch.float16, device=args.device)
+    image_encoder = CLIPVisionModelWithProjection.from_pretrained("h94/IP-Adapter", subfolder="models/image_encoder").to(dtype=torch.float16, device=args.device)
+    unet = UNet2DConditionModel.from_pretrained("SG161222/Realistic_Vision_V4.0_noVAE", subfolder="unet").to(dtype=torch.float16, device=args.device)
 
-    # load ipa weight
+    # 이미지 인코더와 연결할 프로젝션 모듈
     image_proj = Resampler(
         dim=unet.config.cross_attention_dim,
         depth=4,
@@ -68,10 +63,9 @@ def prepare(args):
         embedding_dim=image_encoder.config.hidden_size,
         output_dim=unet.config.cross_attention_dim,
         ff_mult=4
-    )
-    image_proj = image_proj.to(dtype=torch.float16, device=args.device)
+    ).to(dtype=torch.float16, device=args.device)
 
-    # set attention processor
+    # Attention Processor 세팅
     attn_procs = {}
     st = unet.state_dict()
     for name in unet.attn_processors.keys():
@@ -84,7 +78,7 @@ def prepare(args):
         elif name.startswith("down_blocks"):
             block_id = int(name[len("down_blocks.")])
             hidden_size = unet.config.block_out_channels[block_id]
-        # lora_rank = hidden_size // 2 # args.lora_rank
+
         if cross_attention_dim is None:
             attn_procs[name] = LoraRefSAttnProcessor2_0(name, hidden_size)
         else:
@@ -94,25 +88,16 @@ def prepare(args):
                                                       num_tokens=4)
 
     unet.set_attn_processor(attn_procs)
-    adapter_modules = torch.nn.ModuleList(unet.attn_processors.values())
-    adapter_modules = adapter_modules.to(dtype=torch.float16, device=args.device)
+    adapter_modules = torch.nn.ModuleList(unet.attn_processors.values()).to(dtype=torch.float16, device=args.device)
     del st
 
+    # 참조용 UNet 설정 및 캐시 어텐션 적용
+    ref_unet = UNet2DConditionModel.from_pretrained("SG161222/Realistic_Vision_V4.0_noVAE", subfolder="unet").to(dtype=torch.float16, device=args.device)
+    ref_unet.set_attn_processor({name: CacheAttnProcessor2_0() for name in ref_unet.attn_processors.keys()})
 
-
-    ref_unet = UNet2DConditionModel.from_pretrained("SG161222/Realistic_Vision_V4.0_noVAE", subfolder="unet").to(
-        dtype=torch.float16,
-        device=args.device)
-    ref_unet.set_attn_processor(
-        {name: CacheAttnProcessor2_0() for name in ref_unet.attn_processors.keys()})  # set cache
-
-    # weights load
+    # 체크포인트 로딩
     model_sd = torch.load(args.model_ckpt, map_location="cpu")["module"]
-
-    ref_unet_dict = {}
-    unet_dict = {}
-    image_proj_dict = {}
-    adapter_modules_dict = {}
+    ref_unet_dict, unet_dict, image_proj_dict, adapter_modules_dict = {}, {}, {}, {}
     for k in model_sd.keys():
         if k.startswith("ref_unet"):
             ref_unet_dict[k.replace("ref_unet.", "")] = model_sd[k]
@@ -129,6 +114,7 @@ def prepare(args):
     image_proj.load_state_dict(image_proj_dict)
     adapter_modules.load_state_dict(adapter_modules_dict, strict=False)
 
+    # 노이즈 스케줄러 세팅
     noise_scheduler = DDIMScheduler(
         num_train_timesteps=1000,
         beta_start=0.00085,
@@ -139,26 +125,26 @@ def prepare(args):
         steps_offset=1,
     )
 
-    control_net_openpose = ControlNetModel.from_pretrained("lllyasviel/control_v11p_sd15_openpose",
-                                                           torch_dtype=torch.float16).to(device=args.device)
-    pipe = IMAGDressing_v1(unet=unet, reference_unet=ref_unet, vae=vae, tokenizer=tokenizer,
-                            text_encoder=text_encoder, image_encoder=image_encoder,
-                            ip_ckpt=args.ip_ckpt,
-                            ImgProj=image_proj, controlnet=control_net_openpose,
-                            scheduler=noise_scheduler,
-                            safety_checker=StableDiffusionSafetyChecker,
-                            feature_extractor=CLIPImageProcessor)
+    # ControlNet (OpenPose 기반)
+    control_net_openpose = ControlNetModel.from_pretrained("lllyasviel/control_v11p_sd15_openpose", torch_dtype=torch.float16).to(device=args.device)
+
+    # 최종 파이프라인 생성
+    pipe = IMAGDressing_v1(
+        unet=unet, reference_unet=ref_unet, vae=vae,
+        tokenizer=tokenizer, text_encoder=text_encoder, image_encoder=image_encoder,
+        ip_ckpt=args.ip_ckpt, ImgProj=image_proj, controlnet=control_net_openpose,
+        scheduler=noise_scheduler,
+        safety_checker=StableDiffusionSafetyChecker,
+        feature_extractor=CLIPImageProcessor
+    )
     return pipe, generator
 
 
+# ---------- 실행 영역 ----------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='IMAGDressing_v1')
-    parser.add_argument('--ip_ckpt',
-                        default="ckpt/ip-adapter-faceid-plusv2_sd15.bin",
-                        type=str)
-    parser.add_argument('--model_ckpt',
-                        default="ckpt/IMAGDressing-v1_512.pt",
-                        type=str)
+    parser.add_argument('--ip_ckpt', default="ckpt/ip-adapter-faceid-plusv2_sd15.bin", type=str)
+    parser.add_argument('--model_ckpt', default="ckpt/IMAGDressing-v1_512.pt", type=str)
     parser.add_argument('--cloth_path', type=str, required=True)
     parser.add_argument('--face_path', default=None, type=str)
     parser.add_argument('--pose_path', default=None, type=str)
@@ -166,43 +152,41 @@ if __name__ == "__main__":
     parser.add_argument('--device', type=str, default="cuda:0")
     args = parser.parse_args()
 
-    # svae path
-    output_path = args.output_path
+    # 결과 저장 폴더 없으면 생성
+    if not os.path.exists(args.output_path):
+        os.makedirs(args.output_path)
 
-    if not os.path.exists(output_path):
-        os.makedirs(output_path)
-
+    # 파이프라인 로드
     pipe, generator = prepare(args)
     print('====================== pipe load finish ===================')
 
     num_samples = 1
     clip_image_processor = CLIPImageProcessor()
-
     img_transform = transforms.Compose([
         transforms.Resize([640, 512], interpolation=transforms.InterpolationMode.BILINEAR),
         transforms.ToTensor(),
         transforms.Normalize([0.5], [0.5]),
     ])
 
+    # 얼굴 인식 모델 준비
     app = FaceAnalysis(name="buffalo_l", providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
     app.prepare(ctx_id=0, det_size=(640, 640))
 
-
-    prompt = 'A beautiful woman'
-    prompt = prompt + ', best quality, high quality'
+    # 프롬프트 정의
+    prompt = 'A beautiful woman, best quality, high quality'
     null_prompt = ''
     negative_prompt = 'bare, naked, nude, undressed, monochrome, lowres, bad anatomy, worst quality, low quality'
 
+    # 옷 이미지 불러오기 및 처리
     clothes_img = Image.open(args.cloth_path).convert("RGB")
     clothes_img = resize_img(clothes_img)
     vae_clothes = img_transform(clothes_img).unsqueeze(0)
     ref_clip_image = clip_image_processor(images=clothes_img, return_tensors="pt").pixel_values
 
+    # 얼굴 이미지가 있다면 임베딩 추출
     if args.face_path is not None:
-
         image = cv2.imread(args.face_path)
         faces = app.get(image)
-
         faceid_embeds = torch.from_numpy(faces[0].normed_embedding).unsqueeze(0)
         face_image = face_align.norm_crop(image, landmark=faces[0].kps, image_size=224)
         face_clip_image = clip_image_processor(images=face_image, return_tensors="pt").pixel_values
@@ -210,11 +194,13 @@ if __name__ == "__main__":
         faceid_embeds = None
         face_clip_image = None
 
+    # 포즈 이미지가 있다면 불러오기
     if args.pose_path is not None:
         pose_image = diffusers.utils.load_image(args.pose_path)
     else:
         pose_image = None
 
+    # 최종 이미지 생성
     output = pipe(
         ref_image=vae_clothes,
         prompt=prompt,
@@ -230,16 +216,14 @@ if __name__ == "__main__":
         guidance_scale=7.0,
         image_scale=0.9,
         ipa_scale=0.9,
-        s_lora_scale= 0.2,
-        c_lora_scale= 0.2,
+        s_lora_scale=0.2,
+        c_lora_scale=0.2,
         generator=generator,
         num_inference_steps=50,
     ).images
 
-    save_output = []
+    # 이미지 저장
+    save_output = [clothes_img.resize((512, 640), Image.BICUBIC)]
     save_output.append(output[0])
-    save_output.insert(0, clothes_img.resize((512, 640), Image.BICUBIC))
-
     grid = image_grid(save_output, 1, 2)
-    grid.save(
-        output_path + '/' + args.cloth_path.split("/")[-1])
+    grid.save(os.path.join(args.output_path, args.cloth_path.split("/")[-1]))
