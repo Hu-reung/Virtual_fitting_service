@@ -3,6 +3,7 @@ import cv2
 from PIL import Image, ImageDraw
 
 # 라벨 정의: 각 신체 부위 또는 소품에 대한 인덱스
+# 하하 
 label_map = {
     "background": 0,
     "hat": 1,
